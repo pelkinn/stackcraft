@@ -43,7 +43,7 @@ export function CampaignMap() {
 
   return (
     <div ref={rootRef} className="map" onMouseMove={onMove}>
-      <div className="map-bg" style={{ '--map-bg': 'url(/map-bg.png)' } as CSSProperties} />
+      <div className="map-bg" style={{ '--map-bg': 'url(/map-bg.webp)' } as CSSProperties} />
       <div className="map-grid" />
       <div className="map-sparks" aria-hidden>
         {dots.map((d, i) => (
