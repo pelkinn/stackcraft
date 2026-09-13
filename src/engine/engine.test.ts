@@ -149,6 +149,26 @@ describe('симуляция', () => {
     expect(r.nodes.db.load).toBeCloseTo(150)
   })
 
+  it('веб-сервер отдаёт статику сам: до фронта и апстрима она не доходит', () => {
+    const g = chain(['lb', 'inf-lb', 1], ['fe', 'fe-next', 3], ['be', 'be-go', 2], ['c', 'cache-redis', 1], ['db', 'db-pg', 1])
+    g.edges = [
+      { id: 'a', source: 'u', target: 'lb' }, { id: 'b', source: 'lb', target: 'fe' },
+      { id: 'c', source: 'fe', target: 'be' }, { id: 'd', source: 'be', target: 'c' }, { id: 'e', source: 'be', target: 'db' },
+    ]
+    const r = simulate(g, LEVEL_MAP[3].traffic)
+    // 4000 rps, 60% статики: Nginx держит все 4000, на SSR идут только 1440 чтений
+    expect(r.nodes.lb.load).toBeCloseTo(4000)
+    expect(r.nodes.fe.load).toBeCloseTo(1440)
+    expect(r.errorRate).toBe(0)
+  })
+
+  it('без фронта статику отдавать нечем', () => {
+    const g = chain(['lb', 'inf-lb', 1], ['be', 'be-go', 1])
+    g.edges = [{ id: 'a', source: 'u', target: 'lb' }, { id: 'b', source: 'lb', target: 'be' }]
+    const r = simulate(g, { rps: 1000, readRatio: 1, staticShare: 0.5 })
+    expect(r.errorRate).toBeCloseTo(0.5)
+  })
+
   it('очередь без потребителя теряет сообщения', () => {
     const g = chain(['fe', 'fe-react', 1], ['be', 'be-go', 1], ['q', 'q-rabbit', 1])
     g.edges = [{ id: 'a', source: 'u', target: 'fe' }, { id: 'b', source: 'fe', target: 'be' }, { id: 'c', source: 'be', target: 'q' }]
