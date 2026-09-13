@@ -116,8 +116,11 @@ export function simulate(g: Graph, t: Traffic): SimResult {
       case 'client':
       case 'infra': {
         const isCdn = b.tags.includes('cdn')
-        const s = isCdn ? pass.s * (1 - CDN_HIT) : pass.s
-        route(kidsBy(acceptsStatic), { s, r: 0, w: 0 }, true)
+        const staticKids = kidsBy(acceptsStatic)
+        // веб-сервер отдаёт файлы фронта сам: до апстрима статика не доходит
+        const servesFiles = b.tags.includes('webserver') && staticKids.some((k) => BLOCK_MAP[k.node.blockId].category === 'frontend')
+        const s = isCdn ? pass.s * (1 - CDN_HIT) : servesFiles ? 0 : pass.s
+        route(staticKids, { s, r: 0, w: 0 }, true)
         route(kidsBy(acceptsDynamic), { s: 0, r: pass.r, w: pass.w }, true)
         break
       }
