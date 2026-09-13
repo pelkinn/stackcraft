@@ -1,0 +1,111 @@
+name: Build and deploy (static)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  SITE_URL: https://stackcraft.perepelkin-dev.ru
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 24 — как на машине разработки: lock сгенерирован npm 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # Тесты движка проверяют, что эталоны берут 3★ — сломанный баланс не уедет в прод
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Архив вместо сотен отдельных файлов: scp мелочью на порядок медленнее
+      - name: Pack artifact
+        run: tar -czf stackcraft-site.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-site
+          path: stackcraft-site.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: static-site
+
+      - name: Upload archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: stackcraft-site.tar.gz
+          target: /tmp
+
+      # Атомарный деплой: распаковываем в новый релиз и переключаем симлинк.
+      # Сайт ни на секунду не остаётся без файлов, откат — переключением
+      # current обратно на предыдущий каталог.
+      - name: Activate release
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            RELEASE="${{ github.sha }}"
+            BASE=/opt/stackcraft
+
+            mkdir -p "$BASE/$RELEASE"
+            tar -xzf /tmp/stackcraft-site.tar.gz -C "$BASE/$RELEASE"
+            rm -f /tmp/stackcraft-site.tar.gz
+
+            test -f "$BASE/$RELEASE/index.html"
+
+            ln -sfn "$RELEASE" "$BASE/current.tmp"
+            mv -T "$BASE/current.tmp" "$BASE/current"
+
+            # Держим 5 последних релизов для быстрого отката.
+            # find -type d не матчит симлинк current — его не заденет.
+            cd "$BASE"
+            find . -maxdepth 1 -mindepth 1 -type d -printf '%T@ %p\n' \
+              | sort -rn | tail -n +6 | cut -d' ' -f2- | xargs -r rm -rf
+
+      # Проверяем снаружи, с раннера: так ловятся и DNS, и TLS, и конфиг nginx
+      - name: Smoke check
+        run: |
+          set -euo pipefail
+          # SPA отдаёт index.html на любой путь, поэтому 200 на / ничего не доказывает:
+          # проверяем, что бандл, на который ссылается свежий index.html, реально доехал
+          html=$(curl -fsS "$SITE_URL/")
+          bundle=$(grep -o '/assets/index-[^"]*\.js' <<<"$html" | head -n1)
+          echo "bundle: $bundle"
+          curl -fsS -o /dev/null "$SITE_URL$bundle"
+          curl -fsSI "$SITE_URL/" | grep -qi '^cache-control: no-cache'
